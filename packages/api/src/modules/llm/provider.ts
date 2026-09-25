@@ -23,9 +23,21 @@ const OLLAMA_PLACEHOLDER_KEY = "ollama";
 
 /** OpenAI 兼容渠道清单：baseURL 配置键 → 供应商名；maxTokensKey 为该渠道 max-token 参数名。 */
 const OPENAI_COMPATIBLE_PROVIDERS = {
-  openrouter: { baseURLKey: "openrouter_base_url", defaultBaseURL: "https://openrouter.ai/api/v1", maxTokensKey: "max_tokens" },
-  deepseek: { baseURLKey: "deepseek_base_url", defaultBaseURL: "https://api.deepseek.com/v1", maxTokensKey: "max_tokens" },
-  ollama: { baseURLKey: "ollama_base_url", defaultBaseURL: "http://localhost:11434/v1", maxTokensKey: "max_tokens" },
+  openrouter: {
+    baseURLKey: "openrouter_base_url",
+    defaultBaseURL: "https://openrouter.ai/api/v1",
+    maxTokensKey: "max_tokens",
+  },
+  deepseek: {
+    baseURLKey: "deepseek_base_url",
+    defaultBaseURL: "https://api.deepseek.com/v1",
+    maxTokensKey: "max_tokens",
+  },
+  ollama: {
+    baseURLKey: "ollama_base_url",
+    defaultBaseURL: "http://localhost:11434/v1",
+    maxTokensKey: "max_tokens",
+  },
 } as const;
 
 export type OpenAICompatibleProviderName = keyof typeof OPENAI_COMPATIBLE_PROVIDERS;
@@ -63,12 +75,23 @@ export function resolveAdapterSpec(
     return { kind: "openai", model, apiKey: configs.openai_api_key, maxTokensKey: "max_tokens" };
   }
   if (providerName === "anthropic") {
-    if (!configs.anthropic_api_key) throw new Error("Anthropic API key not configured (anthropic_api_key)");
-    return { kind: "anthropic", model, apiKey: configs.anthropic_api_key, maxTokensKey: "max_tokens" };
+    if (!configs.anthropic_api_key)
+      throw new Error("Anthropic API key not configured (anthropic_api_key)");
+    return {
+      kind: "anthropic",
+      model,
+      apiKey: configs.anthropic_api_key,
+      maxTokensKey: "max_tokens",
+    };
   }
   if (providerName === "google") {
     if (!configs.google_api_key) throw new Error("Google API key not configured (google_api_key)");
-    return { kind: "gemini", model, apiKey: configs.google_api_key, maxTokensKey: "maxOutputTokens" };
+    return {
+      kind: "gemini",
+      model,
+      apiKey: configs.google_api_key,
+      maxTokensKey: "maxOutputTokens",
+    };
   }
   if (!isOpenAICompatibleProvider(providerName)) {
     throw new Error(`Unknown LLM provider: ${providerName}`);
@@ -82,7 +105,14 @@ export function resolveAdapterSpec(
   if (providerName !== "ollama" && !apiKey) {
     throw new Error(`${providerName} API key not configured (${providerName}_api_key)`);
   }
-  return { kind: "compat", name: providerName, model, baseURL: configs[baseURLKey] || defaultBaseURL, apiKey, maxTokensKey };
+  return {
+    kind: "compat",
+    name: providerName,
+    model,
+    baseURL: configs[baseURLKey] || defaultBaseURL,
+    apiKey,
+    maxTokensKey,
+  };
 }
 
 /**
@@ -93,7 +123,10 @@ export function resolveAdapterSpec(
 export function toAdapter(spec: AdapterSpec) {
   switch (spec.kind) {
     case "openai":
-      return createOpenaiChatCompletions(spec.model as (typeof OPENAI_CHAT_MODELS)[number], spec.apiKey);
+      return createOpenaiChatCompletions(
+        spec.model as (typeof OPENAI_CHAT_MODELS)[number],
+        spec.apiKey,
+      );
     case "anthropic":
       return createAnthropicChat(spec.model as (typeof ANTHROPIC_MODELS)[number], spec.apiKey);
     case "gemini":
