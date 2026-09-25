@@ -77,6 +77,7 @@ type AuthConfig = z.infer<typeof authConfigSchema>;
 const ERROR_MESSAGES = {
   ACCESS_DENIED: "auth:error.device.accessDenied",
   ACCOUNT_NOT_FOUND: "auth:error.user.accountNotFound",
+  ACCOUNT_TEMPORARILY_LOCKED: "auth:error.user.accountTemporarilyLocked",
   ANONYMOUS_USERS_CANNOT_SIGN_IN_AGAIN_ANONYMOUSLY: "auth:error.anonymous.cannotSignInAgain",
   ASYNC_VALIDATION_NOT_SUPPORTED: "auth:error.asyncValidationNotSupported",
   AUTH_CANCELLED: "auth:error.authCancelled",
@@ -141,6 +142,7 @@ const ERROR_MESSAGES = {
   INVALID_REDIRECT_URL: "auth:error.url.invalidRedirectUrl",
   INVALID_RESOURCE: "organization:error.ac.invalidResource",
   INVALID_ROLE_TYPE: "auth:error.invalidRoleType",
+  INVALID_TEAM_ID: "organization:error.team.invalidId",
   INVALID_TOKEN: "auth:error.token.invalid",
   INVALID_TWO_FACTOR_COOKIE: "auth:error.twoFactor.invalidCookie",
   INVALID_USER: "auth:error.user.invalid",
@@ -166,6 +168,8 @@ const ERROR_MESSAGES = {
   OTP_NOT_ENABLED: "auth:error.otp.notEnabled",
   PASSKEY_NOT_FOUND: "auth:error.passkey.notFound",
   PASSWORD_ALREADY_SET: "auth:error.credentials.password.alreadySet",
+  PASSWORD_CANNOT_BE_UPDATED_VIA_UPDATE_USER:
+    "auth:error.credentials.password.cannotUpdateViaUpdateUser",
   PASSWORD_TOO_LONG: "auth:error.credentials.password.tooLong",
   PASSWORD_TOO_SHORT: "auth:error.credentials.password.tooShort",
   POLLING_TOO_FREQUENTLY: "auth:error.device.pollingTooFrequently",
@@ -238,6 +242,7 @@ const ERROR_MESSAGES = {
   YOU_ARE_NOT_ALLOWED_TO_REMOVE_A_TEAM_MEMBER: "organization:error.team.cannotRemoveMember",
   YOU_ARE_NOT_ALLOWED_TO_REVOKE_USERS_SESSIONS: "admin:error.cannotRevokeUsersSessions",
   YOU_ARE_NOT_ALLOWED_TO_SET_NON_EXISTENT_VALUE: "auth:error.cannotSetNonExistentValue",
+  YOU_ARE_NOT_ALLOWED_TO_SET_USERS_EMAIL: "admin:error.cannotSetUsersEmail",
   YOU_ARE_NOT_ALLOWED_TO_SET_USERS_PASSWORD: "admin:error.cannotSetUsersPassword",
   YOU_ARE_NOT_ALLOWED_TO_UPDATE_A_ROLE: "organization:error.ac.cannotUpdateRole",
   YOU_ARE_NOT_ALLOWED_TO_UPDATE_THIS_MEMBER: "organization:error.cannotUpdateMember",
