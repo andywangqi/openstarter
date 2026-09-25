@@ -25,6 +25,8 @@
     "@openstarter/i18n-web": "workspace:*",
     "@openstarter/ui-web": "workspace:*",
     "@tailwindcss/vite": "^4.2.2",
+    "@tanstack/ai": "catalog:",
+    "@tanstack/ai-react": "catalog:",
     "@tanstack/pacer": "^0.22.0",
     "@tanstack/react-form": "^1.28.0",
     "@tanstack/react-query": "^5.99.0",

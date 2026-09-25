@@ -5,8 +5,8 @@
 // 只渲染视口附近的消息行，避免上万条历史消息全量挂到 DOM。行高动态测量
 // （virtualizer.measureElement + data-index），流式追加时 react-virtual 自动重算。
 
+import type { UIMessage } from "@tanstack/ai";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import type { UIMessage } from "ai";
 import { useRef } from "react";
 
 const OVERSCAN = 8;
@@ -18,8 +18,8 @@ const VIRTUALIZE = process.env.NODE_ENV !== "test";
 /** 首帧估算行高（measureElement 之前 react-virtual 需要），基于文本量粗略估算。 */
 function estimateMessageHeight(message: UIMessage): number {
   const text = message.parts
-    .filter((part): part is { type: "text"; text: string } => part.type === "text")
-    .map((part) => part.text)
+    .filter((part): part is { type: "text"; content: string } => part.type === "text")
+    .map((part) => part.content)
     .join("");
   const lines = Math.max(1, Math.ceil(text.length / 60));
   return 34 + lines * 20;
@@ -28,8 +28,8 @@ function estimateMessageHeight(message: UIMessage): number {
 function ChatMessageBubble({ message }: { message: UIMessage }) {
   const isUser = message.role === "user";
   const text = message.parts
-    .filter((part): part is { type: "text"; text: string } => part.type === "text")
-    .map((part) => part.text)
+    .filter((part): part is { type: "text"; content: string } => part.type === "text")
+    .map((part) => part.content)
     .join("");
 
   return (

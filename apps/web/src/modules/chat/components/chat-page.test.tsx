@@ -1,4 +1,4 @@
-// ChatPage 组件测试（Task 9）：mock useChat（@ai-sdk/react）与 ai 查询工厂，
+// ChatPage 组件测试（Task 9）：mock useChat（@tanstack/ai-react）与 ai 查询工厂，
 // 覆盖消息渲染/历史加载、模型选择、发送、流式停止、错误态与会话管理。
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -27,14 +27,13 @@ const useChatState = vi.hoisted(() => ({
     messages: [] as Array<{
       id: string;
       role: "user" | "assistant";
-      parts: Array<{ type: "text"; text: string }>;
+      parts: Array<{ type: "text"; content: string }>;
     }>,
     sendMessage: vi.fn(),
-    status: "ready" as string,
+    isLoading: false,
     error: undefined as Error | undefined,
     setMessages: vi.fn(),
     stop: vi.fn(),
-    clearError: vi.fn(),
     onFinish: undefined as ((event: unknown) => void) | undefined,
   },
 }));
@@ -57,17 +56,14 @@ const messagesGetMock = vi.hoisted(() => vi.fn());
 
 const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 
-vi.mock("@ai-sdk/react", () => ({
+vi.mock("@tanstack/ai-react", () => ({
   // 捕获组件传入的 onFinish（useChat options），供流结束失效缓存的断言使用。
   useChat: (options?: { onFinish?: (event: unknown) => void }) => {
     useChatState.current.onFinish = options?.onFinish;
     return useChatState.current;
   },
-}));
-
-// DefaultChatTransport 由 `ai` 包导出（@ai-sdk/react 3.x 不转发该导出）。
-vi.mock("ai", () => ({
-  DefaultChatTransport: vi.fn(),
+  // 连接适配器由 hook 消费；组件测试只关心传入的端点路径。
+  fetchServerSentEvents: vi.fn((path: string) => path),
 }));
 
 vi.mock("@/modules/ai/lib/api", () => ({
@@ -168,11 +164,10 @@ beforeEach(() => {
   useChatState.current = {
     messages: [],
     sendMessage: vi.fn(),
-    status: "ready",
+    isLoading: false,
     error: undefined,
     setMessages: vi.fn(),
     stop: vi.fn(),
-    clearError: vi.fn(),
     onFinish: undefined,
   };
   chatsState.items = [
@@ -218,8 +213,8 @@ beforeEach(() => {
 describe("ChatPage", () => {
   it("renders message text of the active conversation", async () => {
     useChatState.current.messages = [
-      { id: "m1", parts: [{ type: "text", text: "Plan a trip to Kyoto" }], role: "user" },
-      { id: "m2", parts: [{ type: "text", text: "Here is a plan." }], role: "assistant" },
+      { id: "m1", parts: [{ content: "Plan a trip to Kyoto", type: "text" }], role: "user" },
+      { id: "m2", parts: [{ content: "Here is a plan.", type: "text" }], role: "assistant" },
     ];
 
     renderChatPage();
@@ -245,10 +240,10 @@ describe("ChatPage", () => {
     });
     await waitFor(() => {
       expect(useChatState.current.setMessages).toHaveBeenCalledWith([
-        { id: "msg-1", parts: [{ type: "text", text: "Plan a trip to Kyoto" }], role: "user" },
+        { id: "msg-1", parts: [{ content: "Plan a trip to Kyoto", type: "text" }], role: "user" },
         {
           id: "msg-2",
-          parts: [{ type: "text", text: "Here is a day-by-day plan." }],
+          parts: [{ content: "Here is a day-by-day plan.", type: "text" }],
           role: "assistant",
         },
       ]);
@@ -296,9 +291,9 @@ describe("ChatPage", () => {
     // 更早的消息拼接在列表最前（pages 新→旧，展平时反转为时间正序）。
     await waitFor(() => {
       expect(useChatState.current.setMessages).toHaveBeenCalledWith([
-        { id: "msg-1", parts: [{ type: "text", text: "oldest" }], role: "user" },
-        { id: "msg-2", parts: [{ type: "text", text: "newer-1" }], role: "user" },
-        { id: "msg-3", parts: [{ type: "text", text: "newer-2" }], role: "assistant" },
+        { id: "msg-1", parts: [{ content: "oldest", type: "text" }], role: "user" },
+        { id: "msg-2", parts: [{ content: "newer-1", type: "text" }], role: "user" },
+        { id: "msg-3", parts: [{ content: "newer-2", type: "text" }], role: "assistant" },
       ]);
     });
   });
@@ -372,12 +367,12 @@ describe("ChatPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect(useChatState.current.sendMessage).toHaveBeenCalledWith({ text: "Hello there" });
+      expect(useChatState.current.sendMessage).toHaveBeenCalledWith("Hello there");
     });
   });
 
   it("disables the input and stops the stream while streaming", async () => {
-    useChatState.current = { ...useChatState.current, status: "streaming" };
+    useChatState.current = { ...useChatState.current, isLoading: true };
 
     renderChatPage();
 
@@ -442,7 +437,8 @@ describe("ChatPage", () => {
     expect(await screen.findByRole("alert")).toBeTruthy();
     expect(screen.getByText("boom")).toBeTruthy();
 
+    // useChat 无 clearError：横幅由本地 errorDismissed 状态收起。
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    expect(useChatState.current.clearError).toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
   });
 });

@@ -1,15 +1,12 @@
-// 聊天页（Task 9）：左侧会话列表 + 模型选择，右侧消息流 + 输入区。
-// useChat（@ai-sdk/react 3.x）经 DefaultChatTransport 接到
-// POST /api/llm/chats/:id/messages（SSE UIMessage 流）；历史经
+// 聊天页：左侧会话列表 + 模型选择，右侧消息流 + 输入区。
+// useChat（@tanstack/ai-react）经 fetchServerSentEvents 接到
+// POST /api/llm/chats/:id/messages（AG-UI SSE 流）；历史经
 // GET /api/llm/chats/:id/messages 拉取后映射为 UIMessage[] 注入 setMessages。
 
 import { Button } from "@openstarter/ui-web/components/button";
+import { fetchServerSentEvents, useChat } from "@tanstack/ai-react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useChat } from "@ai-sdk/react";
-// DefaultChatTransport 仅由 `ai` 包导出（@ai-sdk/react 3.x 内部自 `ai` 引入但不转发）。
-import { DefaultChatTransport } from "ai";
-import type { UIMessage } from "ai";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -29,6 +26,7 @@ import {
   getNextHistoryPage,
 } from "@/modules/chat/lib/api";
 
+import { toUiMessage } from "../lib/messages";
 import { ChatMessages } from "./chat-messages";
 
 type ChatRow = {
@@ -43,13 +41,6 @@ const modelKey = (model: { provider: string; modelId: string }): string =>
 /** 模型选择器的可选项：text 分组 + `${provider}:${modelId}` 键。 */
 const selectorItems = (models: AiModelView[]) =>
   models.map((model) => ({ key: modelKey(model), label: model.displayName }));
-
-/** 历史 API 行（纯文本 content）→ UIMessage。 */
-const toUiMessage = (row: { id: string; role: string; content: string }): UIMessage => ({
-  id: row.id,
-  role: row.role === "assistant" ? "assistant" : "user",
-  parts: [{ type: "text", text: row.content }],
-});
 
 export function ChatPage() {
   const modelsQuery = useQuery({ ...ai.queries.models() });
@@ -193,16 +184,29 @@ function ChatSurface({
   onDraftChange: (value: string) => void;
 }) {
   const queryClient = useQueryClient();
-  const { messages, sendMessage, status, error, setMessages, stop, clearError } = useChat({
-    id: chatId,
+  const { messages, sendMessage, isLoading, error, setMessages, stop } = useChat({
+    threadId: chatId,
+    connection: fetchServerSentEvents(`/api/llm/chats/${chatId}/messages`),
     onError: (streamError: Error) => toast.error(streamError.message),
-    transport: new DefaultChatTransport({ api: `/api/llm/chats/${chatId}/messages` }),
-    // 流式结束（含 abort）即失效历史缓存：全局 staleTime 60s 会让刚落库的
-    // 消息在切换会话/重挂载时被旧缓存遮蔽（final-review MEDIUM-2）。
     onFinish: () => {
       void queryClient.invalidateQueries({ queryKey: historyKey(chatId) });
     },
   });
+
+  // abort 时 onFinish 可能不触发：isLoading 由 true 转 false 也失效历史缓存
+  // （迁移前 onFinish 含 abort 语义，见原注释 final-review MEDIUM-2）。
+  const wasLoadingRef = useRef(isLoading);
+  useEffect(() => {
+    if (wasLoadingRef.current && !isLoading) {
+      void queryClient.invalidateQueries({ queryKey: historyKey(chatId) });
+    }
+    wasLoadingRef.current = isLoading;
+  }, [isLoading, chatId, queryClient]);
+
+  const [errorDismissed, setErrorDismissed] = useState(false);
+  useEffect(() => {
+    setErrorDismissed(false);
+  }, [error]);
 
   // 分页历史（inf-page-params）：page 1 = 最新一页，向后翻页取更早消息，
   // 长会话不再被单页上限静默截断。
@@ -219,14 +223,14 @@ function ChatSurface({
     }
   }, [historyQuery.data, setMessages]);
 
-  const isStreaming = status === "streaming" || status === "submitted";
+  const isStreaming = isLoading;
 
   const handleSubmit = () => {
     const text = draft.trim();
     if (text.length === 0 || isStreaming) {
       return;
     }
-    void sendMessage({ text });
+    void sendMessage(text);
     onDraftChange("");
   };
 
@@ -251,13 +255,13 @@ function ChatSurface({
         <ChatMessages messages={messages} />
       </div>
 
-      {error ? (
+      {error && !errorDismissed ? (
         <div
           className="flex items-center justify-between gap-2 rounded-lg border border-destructive bg-card px-4 py-3 text-destructive text-sm"
           role="alert"
         >
           <span>{error.message}</span>
-          <Button onClick={clearError} size="sm" type="button" variant="ghost">
+          <Button onClick={() => setErrorDismissed(true)} size="sm" type="button" variant="ghost">
             Dismiss
           </Button>
         </div>
