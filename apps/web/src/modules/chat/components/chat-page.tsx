@@ -38,6 +38,36 @@ type ChatRow = {
 const modelKey = (model: { provider: string; modelId: string }): string =>
   `${model.provider}:${model.modelId}`;
 
+/**
+ * 402/502 消息透出（final-review I2）：@tanstack/ai-client 的 assertResponseOk
+ * 只抛 `HTTP error! status: <code>`（仅 401 读 body），迁移前
+ * DefaultChatTransport 透出的是 `response.text()`。在 fetchClient 层先于它读取
+ * 响应正文并抛出；正文为空时退回 status 文案。
+ */
+const fetchClientWithBodyError: typeof fetch = async (input, init) => {
+  const response = await fetch(input, init);
+  if (response.ok) return response;
+  const body = (await response.clone().text()).trim();
+  throw new Error(body.length > 0 ? body : `HTTP error! status: ${response.status}`);
+};
+
+/**
+ * 流错误对外展示的消息：fetchClient 抛出的错误会被 fetchEventSource 包进
+ * StreamReadError（message 固定为 "Stream response body read failed"，原始
+ * 错误挂在 cause 上）。沿 cause 链取最内层消息，恢复响应正文
+ * （如 "insufficient credits"），否则保持原消息。
+ */
+export const surfaceErrorMessage = (error: unknown): string => {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  while (current instanceof Error && current.cause instanceof Error && !seen.has(current)) {
+    seen.add(current);
+    current = current.cause;
+  }
+  if (current instanceof Error && current.message.length > 0) return current.message;
+  return error instanceof Error && error.message.length > 0 ? error.message : "Unknown error";
+};
+
 /** 模型选择器的可选项：text 分组 + `${provider}:${modelId}` 键。 */
 const selectorItems = (models: AiModelView[]) =>
   models.map((model) => ({ key: modelKey(model), label: model.displayName }));
@@ -158,6 +188,8 @@ export function ChatPage() {
         </div>
       </aside>
 
+      {/* key=chatId：会话切换必须让 ChatSurface 整体重挂载 —— 内部 wasLoadingRef /
+          错误态等 hook 依赖 chatId，不重挂会把流结束失效算到新会话头上。 */}
       {activeChatId === null ? (
         <section className="flex flex-1 items-center justify-center rounded-lg border">
           <p className="text-muted-foreground text-sm">
@@ -165,7 +197,12 @@ export function ChatPage() {
           </p>
         </section>
       ) : (
-        <ChatSurface chatId={activeChatId} draft={draft} onDraftChange={setDraft} />
+        <ChatSurface
+          chatId={activeChatId}
+          draft={draft}
+          key={activeChatId}
+          onDraftChange={setDraft}
+        />
       )}
     </div>
   );
@@ -186,8 +223,10 @@ function ChatSurface({
   const queryClient = useQueryClient();
   const { messages, sendMessage, isLoading, error, setMessages, stop } = useChat({
     threadId: chatId,
-    connection: fetchServerSentEvents(`/api/llm/chats/${chatId}/messages`),
-    onError: (streamError: Error) => toast.error(streamError.message),
+    connection: fetchServerSentEvents(`/api/llm/chats/${chatId}/messages`, {
+      fetchClient: fetchClientWithBodyError,
+    }),
+    onError: (streamError: Error) => toast.error(surfaceErrorMessage(streamError)),
     onFinish: () => {
       void queryClient.invalidateQueries({ queryKey: historyKey(chatId) });
     },
@@ -260,7 +299,7 @@ function ChatSurface({
           className="flex items-center justify-between gap-2 rounded-lg border border-destructive bg-card px-4 py-3 text-destructive text-sm"
           role="alert"
         >
-          <span>{error.message}</span>
+          <span>{surfaceErrorMessage(error)}</span>
           <Button onClick={() => setErrorDismissed(true)} size="sm" type="button" variant="ghost">
             Dismiss
           </Button>

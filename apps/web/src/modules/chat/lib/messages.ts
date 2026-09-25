@@ -1,6 +1,6 @@
 /**
  * 历史 API 行（纯文本 content）→ TanStack UIMessage。
- * TanStack TextPart 为 { type: "text", content }（Vercel AI SDK 是 text 字段）。
+ * TanStack TextPart 为 { type: "text", content }（字符串 content，非增量 delta）。
  */
 
 import type { UIMessage } from "@tanstack/ai";

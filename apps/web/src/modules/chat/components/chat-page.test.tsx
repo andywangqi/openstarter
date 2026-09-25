@@ -3,7 +3,7 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // jsdom 未实现 scrollIntoView；Radix Select 打开时会对选中项调用它。
 beforeAll(() => {
@@ -35,7 +35,13 @@ const useChatState = vi.hoisted(() => ({
     setMessages: vi.fn(),
     stop: vi.fn(),
     onFinish: undefined as ((event: unknown) => void) | undefined,
+    onError: undefined as ((error: Error) => void) | undefined,
   },
+}));
+
+// fetchServerSentEvents 的第二个参数（FetchConnectionOptions，含 fetchClient）。
+const connectionOptions = vi.hoisted(() => ({
+  current: undefined as Record<string, unknown> | undefined,
 }));
 
 const chatsState = vi.hoisted(() => ({
@@ -57,13 +63,21 @@ const messagesGetMock = vi.hoisted(() => vi.fn());
 const toastMocks = vi.hoisted(() => ({ error: vi.fn(), success: vi.fn() }));
 
 vi.mock("@tanstack/ai-react", () => ({
-  // 捕获组件传入的 onFinish（useChat options），供流结束失效缓存的断言使用。
-  useChat: (options?: { onFinish?: (event: unknown) => void }) => {
+  // 捕获组件传入的 onFinish / onError（useChat options），供流结束失效缓存与
+  // 错误透出的断言使用。
+  useChat: (options?: {
+    onFinish?: (event: unknown) => void;
+    onError?: (error: Error) => void;
+  }) => {
     useChatState.current.onFinish = options?.onFinish;
+    useChatState.current.onError = options?.onError;
     return useChatState.current;
   },
-  // 连接适配器由 hook 消费；组件测试只关心传入的端点路径。
-  fetchServerSentEvents: vi.fn((path: string) => path),
+  // 连接适配器由 hook 消费；组件测试关心端点路径与传入的连接选项（fetchClient）。
+  fetchServerSentEvents: vi.fn((path: string, options?: Record<string, unknown>) => {
+    connectionOptions.current = options;
+    return path;
+  }),
 }));
 
 vi.mock("@/modules/ai/lib/api", () => ({
@@ -169,7 +183,9 @@ beforeEach(() => {
     setMessages: vi.fn(),
     stop: vi.fn(),
     onFinish: undefined,
+    onError: undefined,
   };
+  connectionOptions.current = undefined;
   chatsState.items = [
     chatRow({ id: "chat-1", title: "Trip planning" }),
     chatRow({ id: "chat-2", title: "Refactor ideas" }),
@@ -440,5 +456,119 @@ describe("ChatPage", () => {
     // useChat 无 clearError：横幅由本地 errorDismissed 状态收起。
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("会话切换重挂载 ChatSurface（key=chatId）：错误横幅的本地收起态被重置", async () => {
+    useChatState.current = { ...useChatState.current, error: new Error("boom") };
+
+    renderChatPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Trip planning" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss" }));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+
+    // 无 key 时 ChatSurface 只是重渲染，errorDismissed 会跨会话残留 → 横幅不再出现。
+    fireEvent.click(screen.getByRole("button", { name: "Refactor ideas" }));
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByText("boom")).toBeTruthy();
+  });
+
+  describe("402/502 响应消息透出（I2）", () => {
+    const renderActiveChat = async () => {
+      renderChatPage();
+      fireEvent.click(await screen.findByRole("button", { name: "Trip planning" }));
+      await waitFor(() => expect(connectionOptions.current).toBeDefined());
+      const fetchClient = connectionOptions.current?.fetchClient;
+      if (typeof fetchClient !== "function") {
+        throw new Error("fetchServerSentEvents 未收到 fetchClient");
+      }
+      return fetchClient as typeof fetch;
+    };
+
+    const stubResponse = (init: {
+      ok: boolean;
+      status: number;
+      statusText?: string;
+      body: string;
+    }) =>
+      ({
+        ok: init.ok,
+        status: init.status,
+        statusText: init.statusText ?? "",
+        clone: () => ({ text: async () => init.body }),
+      }) as unknown as Response;
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("非 2xx 时抛出响应正文（而非 status 文案）", async () => {
+      const fetchClient = await renderActiveChat();
+      const body = JSON.stringify({ code: 1001, message: "insufficient credits" });
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValue(
+            stubResponse({ body, ok: false, status: 402, statusText: "Payment Required" }),
+          ),
+      );
+
+      await expect(fetchClient("/api/llm/chats/chat-1/messages", {})).rejects.toThrow(body);
+    });
+
+    it("非 2xx 且正文为空时退回 HTTP error 文案", async () => {
+      const fetchClient = await renderActiveChat();
+      vi.stubGlobal(
+        "fetch",
+        vi
+          .fn()
+          .mockResolvedValue(
+            stubResponse({ body: "", ok: false, status: 502, statusText: "Bad Gateway" }),
+          ),
+      );
+
+      await expect(fetchClient("/api/llm/chats/chat-1/messages", {})).rejects.toThrow(
+        "HTTP error! status: 502",
+      );
+    });
+
+    it("2xx 响应原样返回", async () => {
+      const fetchClient = await renderActiveChat();
+      const okResponse = stubResponse({ body: "", ok: true, status: 200 });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(okResponse));
+
+      await expect(fetchClient("/api/llm/chats/chat-1/messages", {})).resolves.toBe(okResponse);
+    });
+
+    it("onError 解开 StreamReadError 包装后 toast 响应正文", async () => {
+      renderChatPage();
+      fireEvent.click(await screen.findByRole("button", { name: "Trip planning" }));
+      await waitFor(() => expect(useChatState.current.onError).toBeTypeOf("function"));
+
+      const body = JSON.stringify({ code: 1001, message: "insufficient credits" });
+      // fetchClient 抛出的错误经 fetchEventSource 包成 StreamReadError。
+      const wrapped = Object.assign(new Error("Stream response body read failed"), {
+        cause: new Error(body),
+        name: "StreamReadError",
+      });
+      (useChatState.current.onError as (error: Error) => void)(wrapped);
+
+      expect(toastMocks.error).toHaveBeenCalledWith(body);
+    });
+
+    it("错误横幅同样展示解包后的响应正文", async () => {
+      const wrapped = Object.assign(new Error("Stream response body read failed"), {
+        cause: new Error("upstream provider unavailable"),
+        name: "StreamReadError",
+      });
+      useChatState.current = { ...useChatState.current, error: wrapped };
+
+      renderChatPage();
+      fireEvent.click(await screen.findByRole("button", { name: "Trip planning" }));
+
+      expect(await screen.findByRole("alert")).toBeTruthy();
+      expect(screen.getByText("upstream provider unavailable")).toBeTruthy();
+    });
   });
 });
