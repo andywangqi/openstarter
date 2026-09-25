@@ -15,10 +15,6 @@
     "check-types": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "catalog:",
-    "@ai-sdk/google": "catalog:",
-    "@ai-sdk/openai": "catalog:",
-    "@ai-sdk/openai-compatible": "2.0.24",
     "@hono/zod-validator": "^0.8.0",
     "@modelcontextprotocol/client": "catalog:",
     "@modelcontextprotocol/server": "catalog:",
@@ -30,7 +26,6 @@
     "@tanstack/ai-anthropic": "catalog:",
     "@tanstack/ai-gemini": "catalog:",
     "@tanstack/ai-openai": "catalog:",
-    "ai": "catalog:",
     "aws4fetch": "catalog:",
     "drizzle-orm": "^0.45.1",
     "hono": "catalog:",
