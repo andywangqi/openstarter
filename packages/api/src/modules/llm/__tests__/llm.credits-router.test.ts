@@ -4,8 +4,10 @@
  * 沿用 ai-catalog/router.test.ts 的 harness：requireAuth 走 x-test-user-id header
  * mock，plan-gate 透传；`./credits` 的 preload/settle mock 为 vi.fn（计费语义由
  * credits.test.ts 覆盖，此处聚焦路由接线：预扣 402 短路、成功路径参数透传）。
- * `./provider` 的 getModel mock 返回哨兵对象，避免真实 AI SDK 装配。数据库沿用
- * llm.test.ts 的 in-memory SQLite harness（chat / chat_message 真表）。
+ * `./provider` 的 getAdapter mock 返回装配哨兵，`@tanstack/ai` 的 chat mock 产出
+ * 文本增量并在 finish 模式触发 middleware.onFinish（复刻真实 chat() 的回调时序），
+ * 避免真实 LLM 装配。数据库沿用 llm.test.ts 的 in-memory SQLite harness
+ * （chat / chat_message 真表）。
  */
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,20 +20,10 @@ const state = vi.hoisted(() => ({
   database: undefined as Database | undefined,
   preloadChatCredits: vi.fn(),
   settleChatCredits: vi.fn(),
-  getModel: vi.fn(),
-  streamText: vi.fn(),
+  getAdapter: vi.fn(),
+  chat: vi.fn(),
   revoke: vi.fn(),
 }));
-
-// streamText mock：返回带 text/event-stream 头的 Response，并同步触发 onFinish
-// （携带 usage.totalTokens），使路由的 settle 接线可被断言。
-vi.mock("ai", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("ai")>();
-  return {
-    ...actual,
-    streamText: state.streamText,
-  };
-});
 
 vi.mock("@openstarter/db/server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@openstarter/db/server")>();
@@ -98,22 +90,90 @@ vi.mock("../credits", async (importOriginal) => {
   };
 });
 
-// ./provider：getModel 返回哨兵对象；isLLMEnabled 恒 true。
+// ./provider：getAdapter 返回装配哨兵（含 maxTokensKey，供路由组装 modelOptions）；
+// isLLMEnabled 恒 true。
 vi.mock("../provider", () => ({
-  getModel: state.getModel,
+  getAdapter: state.getAdapter,
   isLLMEnabled: () => Promise.resolve(true),
 }));
+
+// @tanstack/ai：仅 mock chat（流装配），toServerSentEventsResponse 沿用真实实现
+// —— 响应头/编码语义由真实 SSE 编码器给出，fake 流只产出 TEXT_MESSAGE_CONTENT。
+vi.mock("@tanstack/ai", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@tanstack/ai")>();
+  return { ...actual, chat: state.chat };
+});
 
 import { createChat, createMessage } from "../service";
 import { llmRouter } from "../router";
 import { InsufficientCreditsError } from "../../ai-tasks/service";
 
-/** streamText mock 默认行为：返回 SSE Response（onFinish 由测试按需手动触发）。 */
-function defaultStreamText() {
+type AnyMiddleware = {
+  onFinish?: (ctx: unknown, info: unknown) => unknown;
+};
+
+/**
+ * 模拟 chat()：产出一个文本增量事件；mode=finish 时在流内触发
+ * middleware.onFinish（复刻真实 chat()「运行结束才回调」的时序，settle 因此
+ * 在响应体被消费时发生）；mode=error 产出后抛错（对应 onError 路径）。
+ */
+function fakeChat(mode: "finish" | "error", content: string, totalTokens: number) {
+  return (options: { middleware?: Array<AnyMiddleware> }) =>
+    (async function* () {
+      yield { type: "TEXT_MESSAGE_CONTENT", delta: content };
+      if (mode === "finish") {
+        for (const middleware of options.middleware ?? []) {
+          await middleware.onFinish?.(
+            {},
+            {
+              finishReason: "stop",
+              duration: 1,
+              content,
+              usage: { totalTokens, promptTokens: 10, completionTokens: totalTokens - 10 },
+            },
+          );
+        }
+        yield { type: "RUN_FINISHED" };
+      }
+      if (mode === "error") throw new Error("upstream died");
+    })();
+}
+
+const SENTINEL_ADAPTER = { adapter: { sentinel: true }, maxTokensKey: "max_tokens" };
+
+function sendMessage(path: string, init: RequestInit = {}) {
+  return llmRouter.request(path, {
+    ...init,
+    headers: { ...(init.headers ?? {}), "x-test-user-id": TEST_USER_ID },
+  });
+}
+
+/** AG-UI 请求体（TanStack useChat 经 fetchServerSentEvents 的 wire 格式）。 */
+function jsonInit(chatId: string, content: string): RequestInit {
   return {
-    toUIMessageStreamResponse: () =>
-      new Response(null, { status: 200, headers: { "content-type": "text/event-stream" } }),
+    body: JSON.stringify({
+      threadId: chatId,
+      messages: [{ id: "m1", role: "user", parts: [{ type: "text", content }] }],
+    }),
+    headers: { "content-type": "application/json" },
+    method: "POST",
   };
+}
+
+async function seedChatWithHistory(): Promise<string> {
+  const created = await createChat({
+    userId: TEST_USER_ID,
+    provider: "openai",
+    model: "gpt-4o-mini",
+  });
+  const chatId = created.id as string;
+  await createMessage({
+    chatId,
+    userId: TEST_USER_ID,
+    role: "user",
+    content: "hello from history",
+  });
+  return chatId;
 }
 
 const NOW_MS = "(cast((julianday('now') - 2440587.5)*86400000 as integer))";
@@ -147,7 +207,6 @@ const CREATE_CHAT_MESSAGE = `CREATE TABLE chat_message (
 )`;
 
 const TEST_USER_ID = "test-user-llm-credits";
-const SENTINEL_MODEL = { modelId: "sentinel-gpt" } as never;
 
 let dbPath: string | undefined;
 
@@ -175,54 +234,21 @@ afterAll(() => {
   state.database = undefined;
 });
 
-function sendMessage(path: string, init: RequestInit = {}) {
-  return llmRouter.request(path, {
-    ...init,
-    headers: { ...(init.headers ?? {}), "x-test-user-id": TEST_USER_ID },
-  });
-}
-
-function jsonInit(body: unknown): RequestInit {
-  return {
-    body: JSON.stringify(body),
-    headers: { "content-type": "application/json" },
-    method: "POST",
-  };
-}
-
-async function seedChatWithHistory(): Promise<string> {
-  const created = await createChat({
-    userId: TEST_USER_ID,
-    provider: "openai",
-    model: "gpt-4o-mini",
-  });
-  const chatId = created.id as string;
-  await createMessage({
-    chatId,
-    userId: TEST_USER_ID,
-    role: "user",
-    content: "hello from history",
-  });
-  return chatId;
-}
-
 describe("POST /llm/chats/:id/messages — credit wiring", () => {
   beforeEach(() => {
-    state.streamText.mockClear();
+    state.chat.mockReset();
     state.settleChatCredits.mockReset();
     state.preloadChatCredits.mockReset();
     state.revoke.mockReset();
+    state.getAdapter.mockReset();
+    state.getAdapter.mockResolvedValue(SENTINEL_ADAPTER);
   });
 
   it("returns 402 and persists no user message when preload throws InsufficientCreditsError", async () => {
     const chatId = await seedChatWithHistory();
-    state.getModel.mockResolvedValue(SENTINEL_MODEL);
     state.preloadChatCredits.mockRejectedValue(new InsufficientCreditsError());
 
-    const response = await sendMessage(
-      `/llm/chats/${chatId}/messages`,
-      jsonInit({ content: "hi" }),
-    );
+    const response = await sendMessage(`/llm/chats/${chatId}/messages`, jsonInit(chatId, "hi"));
 
     expect(response.status).toBe(402);
     const body = (await response.json()) as { code: number; message: string; data: unknown };
@@ -237,23 +263,21 @@ describe("POST /llm/chats/:id/messages — credit wiring", () => {
     const userRows = (history ?? []).filter((m) => m.chatId === chatId);
     expect(userRows).toHaveLength(1);
     expect(state.settleChatCredits).not.toHaveBeenCalled();
-    expect(state.streamText).not.toHaveBeenCalled();
+    expect(state.chat).not.toHaveBeenCalled();
   });
 
   it("streams and forwards preload args (userId, chatId, provider, model, historyChars) on success", async () => {
     const chatId = await seedChatWithHistory();
-    state.getModel.mockResolvedValue(SENTINEL_MODEL);
-    state.streamText.mockImplementation(defaultStreamText);
+    state.chat.mockImplementation((_o: unknown) =>
+      fakeChat("finish", "mock reply", 100)(_o as never),
+    );
     state.preloadChatCredits.mockResolvedValue({
       consumedCreditId: "c1",
       estimatedCost: 5,
       maxOutputTokens: 4096,
     });
 
-    const response = await sendMessage(
-      `/llm/chats/${chatId}/messages`,
-      jsonInit({ content: "hi" }),
-    );
+    const response = await sendMessage(`/llm/chats/${chatId}/messages`, jsonInit(chatId, "hi"));
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toContain("text/event-stream");
@@ -267,7 +291,7 @@ describe("POST /llm/chats/:id/messages — credit wiring", () => {
       historyChars: expect.any(Number),
     });
 
-    // user 消息在预扣成功后落库。
+    // user 消息在预扣成功后落库（流前，与迁移前一致）。
     const history = await state.database
       ?.select()
       .from((await import("@openstarter/db/schema")).chatMessage);
@@ -275,29 +299,30 @@ describe("POST /llm/chats/:id/messages — credit wiring", () => {
     expect(userRows).toHaveLength(2);
   });
 
-  it("passes maxOutputTokens from preload to streamText and settles credits in onFinish", async () => {
+  it("passes maxOutputTokens from preload to chat modelOptions and settles credits in onFinish", async () => {
     const chatId = await seedChatWithHistory();
-    state.getModel.mockResolvedValue(SENTINEL_MODEL);
-    state.streamText.mockImplementation(defaultStreamText);
+    state.chat.mockImplementation((_o: unknown) =>
+      fakeChat("finish", "mock reply", 1234)(_o as never),
+    );
     state.preloadChatCredits.mockResolvedValue({
       consumedCreditId: "c2",
       estimatedCost: 9,
       maxOutputTokens: 2048,
     });
 
-    await sendMessage(`/llm/chats/${chatId}/messages`, jsonInit({ content: "hi" }));
+    const response = await sendMessage(`/llm/chats/${chatId}/messages`, jsonInit(chatId, "hi"));
+    expect(response.status).toBe(200);
+    // 消费响应体以驱动 fake 流 —— settle 在流内 onFinish 触发（真实时序）。
+    await response.text();
 
-    // 输出封顶透传给 streamText（目录值优先）。
-    expect(state.streamText).toHaveBeenCalledTimes(1);
-    const streamArgs = state.streamText.mock.calls[0]?.[0] as {
-      maxOutputTokens?: number;
-      onFinish?: (event: { text: string; usage: { totalTokens: number } }) => Promise<void> | void;
+    // 输出封顶按目录 maxTokensKey 组装进 modelOptions（目录值优先）。
+    expect(state.chat).toHaveBeenCalledTimes(1);
+    const chatArgs = state.chat.mock.calls[0]?.[0] as {
+      modelOptions?: Record<string, unknown>;
     };
-    expect(streamArgs.maxOutputTokens).toBe(2048);
+    expect(chatArgs.modelOptions).toEqual({ max_tokens: 2048 });
 
-    // onFinish 冲账：整包透传预扣归属 + 实际用量（真实 onFinish 由 AI SDK 在流末触发，
-    // 这里手动调用来断言透传参数与冲账行为）。
-    await streamArgs.onFinish?.({ text: "mock reply", usage: { totalTokens: 1234 } });
+    // onFinish 冲账：整包透传预扣归属 + 实际用量（FinishInfo.usage.totalTokens）。
     expect(state.settleChatCredits).toHaveBeenCalledTimes(1);
     expect(state.settleChatCredits).toHaveBeenCalledWith({
       consumedCreditId: "c2",
@@ -315,26 +340,21 @@ describe("POST /llm/chats/:id/messages — credit wiring", () => {
       estimatedCost: 1,
       maxOutputTokens: 4096,
     });
-    const response2 = await sendMessage(
-      `/llm/chats/${chatId2}/messages`,
-      jsonInit({ content: "hi" }),
-    );
+    const response2 = await sendMessage(`/llm/chats/${chatId2}/messages`, jsonInit(chatId2, "hi"));
     expect(response2.status).toBe(200);
+    await response2.text();
   });
 
-  it("returns 502 and revokes the preload when getModel fails after pre-charging", async () => {
+  it("returns 502 and revokes the preload when getAdapter fails after pre-charging", async () => {
     const chatId = await seedChatWithHistory();
-    state.getModel.mockRejectedValue(new Error("OpenAI API key not configured (openai_api_key)"));
+    state.getAdapter.mockRejectedValue(new Error("OpenAI API key not configured (openai_api_key)"));
     state.preloadChatCredits.mockResolvedValue({
       consumedCreditId: "c-late-fail",
       estimatedCost: 7,
       maxOutputTokens: 4096,
     });
 
-    const response = await sendMessage(
-      `/llm/chats/${chatId}/messages`,
-      jsonInit({ content: "hi" }),
-    );
+    const response = await sendMessage(`/llm/chats/${chatId}/messages`, jsonInit(chatId, "hi"));
 
     expect(response.status).toBe(502);
     const body = (await response.json()) as { code: number; message: string };
@@ -345,22 +365,19 @@ describe("POST /llm/chats/:id/messages — credit wiring", () => {
     expect(state.revoke).toHaveBeenCalledTimes(1);
     expect(state.revoke).toHaveBeenCalledWith({ consumeCreditId: "c-late-fail" });
     expect(state.settleChatCredits).not.toHaveBeenCalled();
-    expect(state.streamText).not.toHaveBeenCalled();
+    expect(state.chat).not.toHaveBeenCalled();
   });
 
-  it("returns 502 without revoking when no preload was charged (free model) and getModel fails", async () => {
+  it("returns 502 without revoking when no preload was charged (free model) and getAdapter fails", async () => {
     const chatId = await seedChatWithHistory();
-    state.getModel.mockRejectedValue(new Error("Unknown LLM provider: nope"));
+    state.getAdapter.mockRejectedValue(new Error("Unknown LLM provider: nope"));
     state.preloadChatCredits.mockResolvedValue({
       consumedCreditId: null,
       estimatedCost: 0,
       maxOutputTokens: null,
     });
 
-    const response = await sendMessage(
-      `/llm/chats/${chatId}/messages`,
-      jsonInit({ content: "hi" }),
-    );
+    const response = await sendMessage(`/llm/chats/${chatId}/messages`, jsonInit(chatId, "hi"));
 
     expect(response.status).toBe(502);
     expect(state.revoke).not.toHaveBeenCalled();

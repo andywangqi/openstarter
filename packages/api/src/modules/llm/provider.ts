@@ -7,17 +7,12 @@
  * 均为 OpenAI 兼容端点，按 baseURL 装配。
  */
 
-import { openai } from "@ai-sdk/openai";
-import { anthropic } from "@ai-sdk/anthropic";
-import { google } from "@ai-sdk/google";
-import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { getAllConfigs } from "@openstarter/shared/config";
 import { logger } from "@openstarter/shared/logger";
 import { ANTHROPIC_MODELS, createAnthropicChat } from "@tanstack/ai-anthropic";
 import { GEMINI_MODELS, createGeminiChat } from "@tanstack/ai-gemini";
 import { OPENAI_CHAT_MODELS, createOpenaiChatCompletions } from "@tanstack/ai-openai";
 import { openaiCompatibleText } from "@tanstack/ai-openai/compatible";
-import type { LanguageModel } from "ai";
 
 const OLLAMA_PLACEHOLDER_KEY = "ollama";
 
@@ -146,64 +141,6 @@ export async function getAdapter(
   const spec = resolveAdapterSpec(provider, modelId, configs);
   logger.debug(`[llm] Loading ${spec.kind} model: ${spec.model}`);
   return { adapter: toAdapter(spec), maxTokensKey: spec.maxTokensKey };
-}
-
-/**
- * Resolve an LLM model instance from config (provider + model name).
- * Throws if the provider is unconfigured or unknown.
- */
-export async function getModel(provider?: string, modelId?: string): Promise<LanguageModel> {
-  const configs = await getAllConfigs();
-
-  const providerName = provider || configs.default_llm_provider || "openai";
-  const model = modelId || "gpt-4o-mini";
-
-  switch (providerName) {
-    case "openai": {
-      if (!configs.openai_api_key) {
-        throw new Error("OpenAI API key not configured (openai_api_key)");
-      }
-      logger.debug(`[llm] Loading OpenAI model: ${model}`);
-      return openai.chat(model);
-    }
-    case "anthropic": {
-      if (!configs.anthropic_api_key) {
-        throw new Error("Anthropic API key not configured (anthropic_api_key)");
-      }
-      logger.debug(`[llm] Loading Anthropic model: ${model}`);
-      return anthropic(model);
-    }
-    case "google": {
-      if (!configs.google_api_key) {
-        throw new Error("Google API key not configured (google_api_key)");
-      }
-      logger.debug(`[llm] Loading Google model: ${model}`);
-      return google(model);
-    }
-    default: {
-      if (!isOpenAICompatibleProvider(providerName)) {
-        throw new Error(`Unknown LLM provider: ${providerName}`);
-      }
-      const { baseURLKey, defaultBaseURL } = OPENAI_COMPATIBLE_PROVIDERS[providerName];
-      if (providerName === "ollama" && !configs.ollama_base_url && !configs[baseURLKey]) {
-        throw new Error("Ollama base URL not configured (ollama_base_url)");
-      }
-      const apiKey =
-        providerName === "ollama"
-          ? OLLAMA_PLACEHOLDER_KEY
-          : configs[`${providerName}_api_key`] || "";
-      if (providerName !== "ollama" && !apiKey) {
-        throw new Error(`${providerName} API key not configured (${providerName}_api_key)`);
-      }
-      logger.debug(`[llm] Loading ${providerName} model: ${model}`);
-      const compatible = createOpenAICompatible({
-        name: providerName,
-        baseURL: configs[baseURLKey] || defaultBaseURL,
-        apiKey,
-      });
-      return compatible(model);
-    }
-  }
 }
 
 /**

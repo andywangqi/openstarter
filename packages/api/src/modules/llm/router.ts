@@ -11,9 +11,9 @@
  */
 
 import { zValidator } from "@hono/zod-validator";
+import { chat, toServerSentEventsResponse } from "@tanstack/ai";
 import { respData, respErr, respPage } from "@openstarter/shared";
 import { logger } from "@openstarter/shared/logger";
-import { streamText } from "ai";
 import { Hono } from "hono";
 import { z } from "zod";
 
@@ -23,8 +23,10 @@ import { paginationSchema } from "../../schema";
 
 import { revoke } from "@openstarter/billing-web";
 import { InsufficientCreditsError } from "../ai-tasks/service";
+import { extractLatestUserText, sendMessageBody } from "./agui-body";
+import { createBillingMiddleware } from "./billing-middleware";
 import { preloadChatCredits, settleChatCredits } from "./credits";
-import { getModel, isLLMEnabled } from "./provider";
+import { getAdapter, isLLMEnabled } from "./provider";
 import {
   createChat,
   createMessage,
@@ -47,10 +49,6 @@ const createChatBody = z.object({
   title: z.string().optional(),
   provider: z.string().optional(),
   model: z.string().optional(),
-});
-
-const sendMessageBody = z.object({
-  content: z.string().min(1),
 });
 
 const listQuery = paginationSchema;
@@ -95,7 +93,7 @@ export const llmRouter = new Hono()
 
       // Verify model is available
       try {
-        await getModel(body.provider, body.model);
+        await getAdapter(body.provider, body.model);
       } catch (error) {
         const message = error instanceof Error ? error.message : "Unknown error";
         return c.json(respErr(message), STATUS_BAD_REQUEST);
@@ -172,7 +170,14 @@ export const llmRouter = new Hono()
     async (c) => {
       const userId = c.get("userId") as string;
       const chatId = c.req.param("id");
-      const { content } = c.req.valid("json");
+      const body = c.req.valid("json");
+      const content = extractLatestUserText(body);
+      if (content === null) {
+        return c.json(respErr("no user message to send"), STATUS_BAD_REQUEST);
+      }
+      if (body.threadId !== undefined && body.threadId !== chatId) {
+        return c.json(respErr("threadId mismatch"), STATUS_BAD_REQUEST);
+      }
 
       // Verify chat exists and belongs to user
       const foundChat = await getChat({ id: chatId, userId });
@@ -218,67 +223,67 @@ export const llmRouter = new Hono()
       // Build messages array for AI SDK
       const messages = [...history, { role: "user" as const, content }];
 
-      // Load the model. 预扣发生在 getModel 之前 —— 若此处失败（如管理员事后
-      // 撤掉了 provider key），必须先撤销预扣再返回 502，否则用户为从未开始的
-      // 流式对话买单。
-      let model;
+      // 装配 adapter。预扣发生在装配之前 —— 若此处失败（如管理员事后撤掉了
+      // provider key），必须先撤销预扣再返回 502，否则用户为从未开始的流式对话买单。
+      let resolved: Awaited<ReturnType<typeof getAdapter>>;
       try {
-        model = await getModel(foundChat.provider, foundChat.model);
+        resolved = await getAdapter(foundChat.provider, foundChat.model);
       } catch (error) {
         await revokePreloadSafely(preload.consumedCreditId);
         const message = error instanceof Error ? error.message : "Unknown error";
         return c.json(respErr(message), STATUS_PROVIDER_ERROR);
       }
 
+      const abortController = new AbortController();
+      c.req.raw.signal.addEventListener("abort", () => abortController.abort(), { once: true });
+
       try {
-        // Stream the response via AI SDK with onFinish callback
-        const result = streamText({
-          model,
+        const stream = chat({
+          adapter: resolved.adapter,
           messages,
-          maxOutputTokens: preload.maxOutputTokens ?? 4096,
-          onFinish: async ({ text, usage }) => {
-            // Settle credits by actual usage. A settle failure must never
-            // fail the already-completed stream — log and keep the preload.
-            try {
-              await settleChatCredits({
-                consumedCreditId: preload.consumedCreditId,
-                estimatedCost: preload.estimatedCost,
-                totalTokens: usage.totalTokens,
-                provider: foundChat.provider,
-                model: foundChat.model,
-              });
-            } catch (error) {
-              logger.warn("[llm] settleChatCredits failed after stream completion", error);
-            }
-
-            // Save assistant message after streaming completes
-            if (text) {
-              await createMessage({
-                chatId,
-                userId,
-                role: "assistant",
-                content: text,
-                model: foundChat.model,
-                provider: foundChat.provider,
-              });
-
-              // Auto-generate title from first user message
-              if (history.length === 0) {
-                const titlePreview = content.slice(0, 50);
-                await updateChat({
-                  id: chatId,
-                  userId,
-                  title: titlePreview,
-                });
-              }
-            }
-          },
+          modelOptions: { [resolved.maxTokensKey]: preload.maxOutputTokens ?? 4096 },
+          abortController,
+          middleware: [
+            createBillingMiddleware({
+              onFinished: async ({ text, totalTokens }) => {
+                // 结算失败绝不影响已完成的流 —— warn 后保留预扣（与迁移前一致）。
+                try {
+                  await settleChatCredits({
+                    consumedCreditId: preload.consumedCreditId,
+                    estimatedCost: preload.estimatedCost,
+                    totalTokens,
+                    provider: foundChat.provider,
+                    model: foundChat.model,
+                  });
+                } catch (error) {
+                  logger.warn("[llm] settleChatCredits failed after stream completion", error);
+                }
+                if (text) {
+                  try {
+                    await createMessage({
+                      chatId,
+                      userId,
+                      role: "assistant",
+                      content: text,
+                      model: foundChat.model,
+                      provider: foundChat.provider,
+                    });
+                    // 首条消息自动生成标题
+                    if (history.length === 0) {
+                      await updateChat({ id: chatId, userId, title: content.slice(0, 50) });
+                    }
+                  } catch (error) {
+                    logger.warn("[llm] failed to persist assistant message after stream", error);
+                  }
+                }
+              },
+            }),
+          ],
         });
 
-        // Return the AI SDK's built-in stream response (SSE)
-        return result.toUIMessageStreamResponse();
+        return toServerSentEventsResponse(stream, { abortController });
       } catch (error) {
-        // streamText 装配失败（未产生流）：同样先撤销预扣再报 502。
+        // chat() 装配期同步失败（未产生流）：同样先撤销预扣再报 502。
         await revokePreloadSafely(preload.consumedCreditId);
         const message = error instanceof Error ? error.message : "LLM error";
         return c.json(respErr(message), STATUS_PROVIDER_ERROR);
