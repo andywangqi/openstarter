@@ -16,7 +16,7 @@ export const sendMessageBody = z.object({
       z.object({
         id: z.string().optional(),
         role: z.enum(["user", "assistant", "system"]),
-        parts: z.array(z.unknown()).min(1),
+        parts: z.array(z.unknown()),
       }),
     )
     .min(1),

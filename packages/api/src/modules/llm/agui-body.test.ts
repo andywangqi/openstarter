@@ -16,6 +16,16 @@ describe("sendMessageBody", () => {
   it("messages 为空则失败", () => {
     expect(sendMessageBody.safeParse({ messages: [] }).success).toBe(false);
   });
+
+  it("接受 runId 与 forwardedProps", () => {
+    const parsed = sendMessageBody.safeParse({
+      threadId: "c1",
+      runId: "r1",
+      messages: [userMsg([{ type: "text", content: "hi" }])],
+      forwardedProps: { locale: "zh-CN" },
+    });
+    expect(parsed.success).toBe(true);
+  });
 });
 
 describe("extractLatestUserText", () => {
@@ -58,5 +68,21 @@ describe("extractLatestUserText", () => {
       messages: [userMsg([{ type: "text", content: "   " }])],
     });
     expect(extractLatestUserText(blank)).toBeNull();
+  });
+
+  it("parts 为空数组：schema 通过，提取为 null", () => {
+    const body = { messages: [userMsg([])] };
+    expect(sendMessageBody.safeParse(body).success).toBe(true);
+    expect(extractLatestUserText(sendMessageBody.parse(body))).toBeNull();
+  });
+
+  it("跳过 system 消息", () => {
+    const body = sendMessageBody.parse({
+      messages: [
+        userMsg([{ type: "text", content: "ask" }]),
+        { id: "s1", role: "system", parts: [{ type: "text", content: "sys" }] },
+      ],
+    });
+    expect(extractLatestUserText(body)).toBe("ask");
   });
 });
