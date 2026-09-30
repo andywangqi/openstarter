@@ -49,6 +49,7 @@ export function toSceneItem(shape: TLImageShape): SceneItem {
     y: shape.y / PAGE_UNITS_PER_SCENE_UNIT,
     rotation: shape.rotation,
     scale: shape.props.w / MODEL_SHAPE_SIZE,
+    isContainer: shape.meta.container === true,
   };
 }
 
@@ -58,6 +59,7 @@ export function addModel(
   url: string,
   assetId: TLAssetId,
   size: number = MODEL_SHAPE_SIZE,
+  container = false,
 ): TLShapeId {
   const id = createShapeId();
   const placed = getModelShapes(editor).length;
@@ -68,7 +70,35 @@ export function addModel(
     x: placed * (size * 0.45 + 40),
     y: 0,
     props: { assetId, w: size, h: size },
-    meta: { modelUrl: url },
+    meta: { modelUrl: url, container },
+  });
+  editor.setCurrentTool("select");
+  editor.select(id);
+  return id;
+}
+
+/**
+ * Place a model dropped at a concrete scene position (scene meters, the same
+ * center convention the ground drag uses).
+ */
+export function addModelAt(
+  editor: Editor,
+  url: string,
+  assetId: TLAssetId,
+  x: number,
+  y: number,
+  size: number = MODEL_SHAPE_SIZE,
+  container = false,
+): TLShapeId {
+  const id = createShapeId();
+  editor.markHistoryStoppingPoint("Drop 3D model into yard");
+  editor.createShape({
+    id,
+    type: "image",
+    x: x * PAGE_UNITS_PER_SCENE_UNIT,
+    y: y * PAGE_UNITS_PER_SCENE_UNIT,
+    props: { assetId, w: size, h: size },
+    meta: { modelUrl: url, container },
   });
   editor.setCurrentTool("select");
   editor.select(id);
@@ -131,6 +161,13 @@ export function setModelRotation(editor: Editor, id: TLShapeId, rotation: number
 }
 
 export function resizeModel(editor: Editor, id: TLShapeId, size: number) {
+  editor.updateShapes([{ id, type: "image", props: { w: size, h: size } }]);
+}
+
+/** Set absolute uniform scale (1 = default size), e.g. from viewport handles. */
+export function setModelScale(editor: Editor, id: TLShapeId, scale: number) {
+  if (!getModelShape(editor, id)) return;
+  const size = Math.max(1, Math.round(scale * MODEL_SHAPE_SIZE));
   editor.updateShapes([{ id, type: "image", props: { w: size, h: size } }]);
 }
 

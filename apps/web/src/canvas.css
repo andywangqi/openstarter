@@ -343,6 +343,12 @@
 .board-element-grid button:hover img {
   background: #d6e5ce;
 }
+.board-element-grid button[draggable="true"] {
+  cursor: grab;
+}
+.board-element-grid button[draggable="true"]:active {
+  cursor: grabbing;
+}
 .board-element-thumb {
   position: relative;
   display: block;
@@ -589,6 +595,23 @@
   border-radius: 7px;
   font-size: 12px;
 }
+.scene-hint {
+  position: absolute;
+  z-index: 300;
+  top: 78px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(560px, calc(100% - 320px));
+  border: 1px solid #83a687;
+  background: #26362cee;
+  color: #dceedd;
+  padding: 9px 14px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  pointer-events: none;
+}
 .design-canvas:has(.unified-scene) .board-toolbar,
 .design-canvas:has(.unified-scene) .board-hint {
   display: none;
@@ -614,6 +637,11 @@
     top: 105px;
     right: 10px;
     max-width: 150px;
+  }
+  .scene-hint {
+    top: 100px;
+    max-width: calc(100% - 24px);
+    font-size: 11px;
   }
   .scene-tools > span {
     font-size: 9px;

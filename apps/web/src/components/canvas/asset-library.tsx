@@ -68,54 +68,102 @@ const assets = [
     ),
   },
 ];
-const chairAsset = {
-  name: "户外花园椅",
-  category: "Furniture",
-  src: svg(
-    '<rect x="42" y="22" width="76" height="74" rx="20" fill="#c6d9c0" stroke="#6f8c69" stroke-width="4"/><path d="M52 40v38M70 40v38M90 40v38M108 40v38M40 92l-8 49M120 92l8 49" stroke="#6f8c69" stroke-width="7"/><rect x="32" y="87" width="96" height="19" rx="8" fill="#c6d9c0" stroke="#6f8c69" stroke-width="4"/>',
-  ),
+/** Drag payload mime for dragging a 3D material straight into the scene. */
+export const MODEL_DRAG_MIME = "application/x-scene-model";
+
+export type ModelCatalogEntry = {
+  url: string;
+  name: string;
+  category: string;
+  src: string;
+  /** Shape size in page units when different from the default. */
+  size?: number;
+  /** Containers (e.g. the courtyard villa) define the yard bounds. */
+  container?: boolean;
 };
 
-const plantAsset = {
-  ...assets.find((asset) => asset.category === "Planters")!,
-  name: "绿萝盆栽",
-  category: "Plants",
-};
+/** GLB-backed materials. `container` models act as the yard boundary. */
+export const MODEL_CATALOG: ModelCatalogEntry[] = [
+  {
+    url: CHAIR_MODEL_URL,
+    name: "户外花园椅",
+    category: "Furniture",
+    src: svg(
+      '<rect x="42" y="22" width="76" height="74" rx="20" fill="#c6d9c0" stroke="#6f8c69" stroke-width="4"/><path d="M52 40v38M70 40v38M90 40v38M108 40v38M40 92l-8 49M120 92l8 49" stroke="#6f8c69" stroke-width="7"/><rect x="32" y="87" width="96" height="19" rx="8" fill="#c6d9c0" stroke="#6f8c69" stroke-width="4"/>',
+    ),
+  },
+  {
+    url: PLANT_MODEL_URL,
+    name: "绿萝盆栽",
+    category: "Plants",
+    src: assets.find((asset) => asset.category === "Planters")!.src,
+  },
+  {
+    url: VILLA_MODEL_URL,
+    name: "庭院双拼别墅",
+    category: "Buildings",
+    src: svg(
+      '<ellipse cx="80" cy="138" rx="64" ry="9" fill="#183421" opacity=".12"/>' +
+        '<rect x="24" y="72" width="56" height="60" fill="#efe7d6"/><rect x="80" y="72" width="56" height="60" fill="#e5dac3"/>' +
+        '<path d="M18 74 49 40l31 34z" fill="#b5654a"/><path d="M80 74l31-34 31 34z" fill="#a6553f"/>' +
+        '<rect x="44" y="100" width="15" height="32" rx="2" fill="#6d5140"/><rect x="101" y="100" width="15" height="32" rx="2" fill="#6d5140"/>' +
+        '<rect x="29" y="84" width="13" height="12" rx="2" fill="#8aa3a8"/><rect x="118" y="84" width="13" height="12" rx="2" fill="#8aa3a8"/>',
+    ),
+    size: MODEL_SHAPE_SIZE * 2,
+    container: true,
+  },
+];
 
-const villaAsset = {
-  name: "庭院双拼别墅",
-  category: "Buildings",
-  src: svg(
-    '<ellipse cx="80" cy="138" rx="64" ry="9" fill="#183421" opacity=".12"/>' +
-      '<rect x="24" y="72" width="56" height="60" fill="#efe7d6"/><rect x="80" y="72" width="56" height="60" fill="#e5dac3"/>' +
-      '<path d="M18 74 49 40l31 34z" fill="#b5654a"/><path d="M80 74l31-34 31 34z" fill="#a6553f"/>' +
-      '<rect x="44" y="100" width="15" height="32" rx="2" fill="#6d5140"/><rect x="101" y="100" width="15" height="32" rx="2" fill="#6d5140"/>' +
-      '<rect x="29" y="84" width="13" height="12" rx="2" fill="#8aa3a8"/><rect x="118" y="84" width="13" height="12" rx="2" fill="#8aa3a8"/>',
-  ),
-  size: MODEL_SHAPE_SIZE * 2,
+type LibraryAsset = {
+  name: string;
+  category: string;
+  src: string;
+  size?: number;
+  modelUrl?: string;
+  container?: boolean;
 };
 
 // 2D planning symbols plus the GLB-backed entries that drop into the 3D scene.
-const libraryAssets = [...assets, chairAsset, plantAsset, villaAsset];
+const libraryAssets: LibraryAsset[] = [
+  ...assets,
+  ...MODEL_CATALOG.map(({ url, ...rest }) => ({ ...rest, modelUrl: url })),
+];
 
-type LibraryAsset = (typeof libraryAssets)[number];
-
-/** Assets backed by a real GLB drop into the 3D scene; the rest stay 2D symbols. */
-const modelUrlFor = (asset: LibraryAsset): string | undefined =>
-  asset === chairAsset
-    ? CHAIR_MODEL_URL
-    : asset === plantAsset
-      ? PLANT_MODEL_URL
-      : asset === villaAsset
-        ? VILLA_MODEL_URL
-        : undefined;
+/** Register the tldraw image asset used as the 2D/thumbnail backing of a GLB. */
+export function createModelAsset(
+  editor: Editor,
+  entry: Pick<ModelCatalogEntry, "name" | "src">,
+) {
+  const assetId = AssetRecordType.createId();
+  editor.createAssets([
+    {
+      id: assetId,
+      type: "image",
+      typeName: "asset",
+      props: {
+        name: entry.name,
+        src: entry.src,
+        w: 160,
+        h: 160,
+        mimeType: "image/svg+xml",
+        isAnimated: false,
+      },
+      meta: {},
+    },
+  ]);
+  return assetId;
+}
 
 export function AssetLibrary({ editor }: { editor: Editor }) {
   const [open, setOpen] = useState(true);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All");
   const add = (asset: LibraryAsset) => {
-    const modelUrl = modelUrlFor(asset);
+    if (asset.modelUrl) {
+      const assetId = createModelAsset(editor, asset);
+      addModel(editor, asset.modelUrl, assetId, asset.size, asset.container);
+      return;
+    }
     const assetId = AssetRecordType.createId();
     editor.createAssets([
       {
@@ -133,12 +181,6 @@ export function AssetLibrary({ editor }: { editor: Editor }) {
         meta: {},
       },
     ]);
-    if (modelUrl) {
-      const initialSize =
-        "size" in asset && typeof asset.size === "number" ? asset.size : undefined;
-      addModel(editor, modelUrl, assetId, initialSize);
-      return;
-    }
     const shapeId = createShapeId();
     const center = editor.getViewportPageBounds().center;
     editor.markHistoryStoppingPoint("Add landscape element");
@@ -205,16 +247,26 @@ export function AssetLibrary({ editor }: { editor: Editor }) {
               a.name.toLowerCase().includes(query.toLowerCase()),
           )
           .map((a) => (
-            <button key={a.name} onClick={() => add(a)}>
+            <button
+              key={a.name}
+              onClick={() => add(a)}
+              draggable={Boolean(a.modelUrl)}
+              onDragStart={(event) => {
+                if (!a.modelUrl) return;
+                event.dataTransfer.setData(MODEL_DRAG_MIME, a.modelUrl);
+                event.dataTransfer.effectAllowed = "copy";
+              }}
+              title={a.modelUrl ? "拖进 3D 院子直接放置，或单击添加" : undefined}
+            >
               <span className="board-element-thumb">
                 <img src={a.src} alt="" />
-                {modelUrlFor(a) && <em className="board-element-3d">3D</em>}
+                {a.modelUrl && <em className="board-element-3d">3D</em>}
               </span>
               <span>{a.name}</span>
             </button>
           ))}
       </div>
-      <p>Click to add · items marked 3D drop into the 3D scene and can be placed repeatedly.</p>
+      <p>带 3D 角标的素材可直接拖进院子放置 · 物体会自动吸附在院墙范围内 · 也可单击添加</p>
     </aside>
   );
 }

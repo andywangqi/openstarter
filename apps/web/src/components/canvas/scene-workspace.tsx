@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useValue, type Editor, type TLShapeId } from "tldraw";
-import { Maximize, RotateCw, Trash2 } from "lucide-react";
+import { Expand, Maximize, RotateCw, Trash2 } from "lucide-react";
 import type { createScene } from "./scene-engine";
+import { createModelAsset, MODEL_CATALOG } from "./asset-library";
 import {
+  addModelAt,
   deleteModels,
   duplicateModel,
   getModelShape,
@@ -12,6 +14,7 @@ import {
   resizeModel,
   rotateModel,
   setModelRotation,
+  setModelScale,
   toSceneItem,
 } from "./scene-store";
 
@@ -30,6 +33,14 @@ function SceneSurface({ editor }: { editor: Editor }) {
   const host = useRef<HTMLDivElement>(null);
   const engine = useRef<ReturnType<typeof createScene> | null>(null);
   const [status, setStatus] = useState("");
+  const [hint, setHint] = useState("");
+  const hintTimer = useRef<number | undefined>(undefined);
+  const showHint = (message: string, options?: { persist?: boolean }) => {
+    setHint(message);
+    window.clearTimeout(hintTimer.current);
+    if (message && !options?.persist)
+      hintTimer.current = window.setTimeout(() => setHint(""), 3200);
+  };
   const models = useValue("scene models", () => getModelShapes(editor), [editor]);
   const selected = useValue("scene selection", () => editor.getOnlySelectedShapeId(), [editor]);
   const selectedModel = selected ? models.find((m) => m.id === selected) : undefined;
@@ -50,8 +61,18 @@ function SceneSurface({ editor }: { editor: Editor }) {
           dragStart: () => editor.markHistoryStoppingPoint("Move model"),
           move: (id, x, y) => moveModel(editor, id as TLShapeId, x, y),
           rotate: (id, rotation) => setModelRotation(editor, id as TLShapeId, rotation),
+          scale: (id, scaleValue) => setModelScale(editor, id as TLShapeId, scaleValue),
+          place: (url, x, y) => {
+            const entry = MODEL_CATALOG.find((item) => item.url === url);
+            if (!entry) return;
+            const assetId = createModelAsset(editor, entry);
+            addModelAt(editor, url, assetId, x, y, entry.size, entry.container);
+          },
           status: (message) => {
             if (alive) setStatus(message);
+          },
+          hint: (message, options) => {
+            if (alive) showHint(message, options);
           },
         });
         setReady(true);
@@ -61,6 +82,7 @@ function SceneSurface({ editor }: { editor: Editor }) {
       });
     return () => {
       alive = false;
+      window.clearTimeout(hintTimer.current);
       engine.current?.dispose();
       engine.current = null;
     };
@@ -93,6 +115,12 @@ function SceneSurface({ editor }: { editor: Editor }) {
         event.preventDefault();
         event.stopImmediatePropagation();
         duplicateModel(editor, id);
+      } else if (!event.ctrlKey && !event.metaKey && !event.altKey && key.toLowerCase() === "f") {
+        const id = editor.getOnlySelectedShapeId();
+        if (!id || !getModelShape(editor, id)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        engine.current?.beginFillMode();
       }
     };
     window.addEventListener("keydown", onKeyDown, true);
@@ -105,17 +133,20 @@ function SceneSurface({ editor }: { editor: Editor }) {
     <section className="unified-scene" aria-label="统一模型场景">
       <div className="unified-scene-webgl" ref={host} />
       {!models.length && (
-        <div className="scene-empty">从左侧素材库选择植物、家具或建筑（带 3D 角标），直接放入场景</div>
+        <div className="scene-empty">
+          先从左侧拖入「庭院双拼别墅」作为院子，再把植物 / 家具直接拖进院墙范围
+        </div>
       )}
       {status && (
         <button className="scene-status" onClick={() => engine.current?.retry()}>
           {status}
         </button>
       )}
+      {hint && <div className="scene-hint" role="status">{hint}</div>}
       <div className="scene-tools" role="toolbar" aria-label="Scene controls">
         <span>
-          左键点击选中 · 左键拖动移动模型 · 右键拖动模型转向 · 右键拖空白处旋转视角 · 滚轮缩放 ·
-          Delete 删除 · Ctrl/Cmd+D 复制
+          从素材库拖植物/家具进院子（自动吸附院墙）· 左键移动物体 · 右键转向 · 右键空白旋转视角 ·
+          滚轮缩放 · 拖角点缩放 · F 填满空间 · Delete 删除 · Ctrl/Cmd+D 复制
         </span>
         <button onClick={() => engine.current?.fit()} title="查看全部">
           <Maximize size={17} />
@@ -127,13 +158,21 @@ function SceneSurface({ editor }: { editor: Editor }) {
         <button disabled={!selectedModel} onClick={rotate}>
           旋转物体 45°
         </button>
+        <button
+          disabled={!selectedModel}
+          title="让选中物体占满目标物体的占地范围，再点击目标 (F)"
+          onClick={() => engine.current?.beginFillMode()}
+        >
+          <Expand size={17} />
+          填满空间
+        </button>
         <label>
           大小
           <input
             aria-label="Selected model size"
             type="range"
-            min="85"
-            max="1020"
+            min={Math.round(MODEL_SHAPE_SIZE * 0.15)}
+            max={MODEL_SHAPE_SIZE * 12}
             value={selectedModel?.props.w ?? MODEL_SHAPE_SIZE}
             disabled={!selectedModel}
             onPointerDown={() => editor.markHistoryStoppingPoint("Resize model")}
