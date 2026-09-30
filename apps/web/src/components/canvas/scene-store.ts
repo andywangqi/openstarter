@@ -53,16 +53,21 @@ export function toSceneItem(shape: TLImageShape): SceneItem {
 }
 
 /** Place one more instance of an already-registered GLB asset. */
-export function addModel(editor: Editor, url: string, assetId: TLAssetId): TLShapeId {
+export function addModel(
+  editor: Editor,
+  url: string,
+  assetId: TLAssetId,
+  size: number = MODEL_SHAPE_SIZE,
+): TLShapeId {
   const id = createShapeId();
   const placed = getModelShapes(editor).length;
   editor.markHistoryStoppingPoint("Add 3D model");
   editor.createShape({
     id,
     type: "image",
-    x: placed * PLACEMENT_NUDGE,
+    x: placed * (size * 0.45 + 40),
     y: 0,
-    props: { assetId, w: MODEL_SHAPE_SIZE, h: MODEL_SHAPE_SIZE },
+    props: { assetId, w: size, h: size },
     meta: { modelUrl: url },
   });
   editor.setCurrentTool("select");

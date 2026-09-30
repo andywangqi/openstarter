@@ -1,5 +1,5 @@
-import { CHAIR_MODEL_URL, PLANT_MODEL_URL } from "./model-shape";
-import { addModel } from "./scene-store";
+import { CHAIR_MODEL_URL, PLANT_MODEL_URL, VILLA_MODEL_URL } from "./model-shape";
+import { addModel, MODEL_SHAPE_SIZE } from "./scene-store";
 import { useState } from "react";
 import { Leaf, Search, X } from "lucide-react";
 import { AssetRecordType, createShapeId, type Editor } from "tldraw";
@@ -82,11 +82,33 @@ const plantAsset = {
   category: "Plants",
 };
 
-type LibraryAsset = (typeof assets)[number];
+const villaAsset = {
+  name: "庭院双拼别墅",
+  category: "Buildings",
+  src: svg(
+    '<ellipse cx="80" cy="138" rx="64" ry="9" fill="#183421" opacity=".12"/>' +
+      '<rect x="24" y="72" width="56" height="60" fill="#efe7d6"/><rect x="80" y="72" width="56" height="60" fill="#e5dac3"/>' +
+      '<path d="M18 74 49 40l31 34z" fill="#b5654a"/><path d="M80 74l31-34 31 34z" fill="#a6553f"/>' +
+      '<rect x="44" y="100" width="15" height="32" rx="2" fill="#6d5140"/><rect x="101" y="100" width="15" height="32" rx="2" fill="#6d5140"/>' +
+      '<rect x="29" y="84" width="13" height="12" rx="2" fill="#8aa3a8"/><rect x="118" y="84" width="13" height="12" rx="2" fill="#8aa3a8"/>',
+  ),
+  size: MODEL_SHAPE_SIZE * 2,
+};
+
+// 2D planning symbols plus the GLB-backed entries that drop into the 3D scene.
+const libraryAssets = [...assets, chairAsset, plantAsset, villaAsset];
+
+type LibraryAsset = (typeof libraryAssets)[number];
 
 /** Assets backed by a real GLB drop into the 3D scene; the rest stay 2D symbols. */
 const modelUrlFor = (asset: LibraryAsset): string | undefined =>
-  asset === chairAsset ? CHAIR_MODEL_URL : asset === plantAsset ? PLANT_MODEL_URL : undefined;
+  asset === chairAsset
+    ? CHAIR_MODEL_URL
+    : asset === plantAsset
+      ? PLANT_MODEL_URL
+      : asset === villaAsset
+        ? VILLA_MODEL_URL
+        : undefined;
 
 export function AssetLibrary({ editor }: { editor: Editor }) {
   const [open, setOpen] = useState(true);
@@ -112,7 +134,9 @@ export function AssetLibrary({ editor }: { editor: Editor }) {
       },
     ]);
     if (modelUrl) {
-      addModel(editor, modelUrl, assetId);
+      const initialSize =
+        "size" in asset && typeof asset.size === "number" ? asset.size : undefined;
+      addModel(editor, modelUrl, assetId, initialSize);
       return;
     }
     const shapeId = createShapeId();
@@ -158,14 +182,23 @@ export function AssetLibrary({ editor }: { editor: Editor }) {
         />
       </label>
       <div className="board-element-tabs">
-        {["All", "Plants", "Trees", "Flowers", "Planters", "Furniture", "Landscape"].map((c) => (
+        {[
+          "All",
+          "Plants",
+          "Trees",
+          "Flowers",
+          "Planters",
+          "Furniture",
+          "Buildings",
+          "Landscape",
+        ].map((c) => (
           <button className={c === category ? "active" : ""} key={c} onClick={() => setCategory(c)}>
             {c}
           </button>
         ))}
       </div>
       <div className="board-element-grid">
-        {assets
+        {libraryAssets
           .filter(
             (a) =>
               (category === "All" || a.category === category) &&

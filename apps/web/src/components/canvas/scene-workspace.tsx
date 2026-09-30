@@ -104,7 +104,9 @@ function SceneSurface({ editor }: { editor: Editor }) {
   return (
     <section className="unified-scene" aria-label="统一模型场景">
       <div className="unified-scene-webgl" ref={host} />
-      {!models.length && <div className="scene-empty">从左侧选择植物或家具，直接放入场景</div>}
+      {!models.length && (
+        <div className="scene-empty">从左侧素材库选择植物、家具或建筑（带 3D 角标），直接放入场景</div>
+      )}
       {status && (
         <button className="scene-status" onClick={() => engine.current?.retry()}>
           {status}
