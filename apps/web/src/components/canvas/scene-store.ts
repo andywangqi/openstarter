@@ -117,6 +117,14 @@ export function rotateModel(editor: Editor, id: TLShapeId, delta: number) {
   ]);
 }
 
+/** Set absolute yaw (shape convention, radians), e.g. after a right-drag rotate. */
+export function setModelRotation(editor: Editor, id: TLShapeId, rotation: number) {
+  if (!getModelShape(editor, id)) return;
+  const normalized = ((rotation % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+  editor.markHistoryStoppingPoint("Rotate 3D model");
+  editor.updateShapes([{ id, type: "image", rotation: normalized }]);
+}
+
 export function resizeModel(editor: Editor, id: TLShapeId, size: number) {
   editor.updateShapes([{ id, type: "image", props: { w: size, h: size } }]);
 }

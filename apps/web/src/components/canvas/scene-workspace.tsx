@@ -11,6 +11,7 @@ import {
   MODEL_SHAPE_SIZE,
   resizeModel,
   rotateModel,
+  setModelRotation,
   toSceneItem,
 } from "./scene-store";
 
@@ -48,6 +49,7 @@ function SceneSurface({ editor }: { editor: Editor }) {
           },
           dragStart: () => editor.markHistoryStoppingPoint("Move model"),
           move: (id, x, y) => moveModel(editor, id as TLShapeId, x, y),
+          rotate: (id, rotation) => setModelRotation(editor, id as TLShapeId, rotation),
           status: (message) => {
             if (alive) setStatus(message);
           },
@@ -110,8 +112,8 @@ function SceneSurface({ editor }: { editor: Editor }) {
       )}
       <div className="scene-tools" role="toolbar" aria-label="Scene controls">
         <span>
-          左键点击选中 · 左键拖动模型移动 · 右键拖动旋转视角 · 滚轮缩放 · Delete 删除 · Ctrl/Cmd+D
-          复制
+          左键点击选中 · 左键拖动移动模型 · 右键拖动模型转向 · 右键拖空白处旋转视角 · 滚轮缩放 ·
+          Delete 删除 · Ctrl/Cmd+D 复制
         </span>
         <button onClick={() => engine.current?.fit()} title="查看全部">
           <Maximize size={17} />

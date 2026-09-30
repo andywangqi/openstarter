@@ -17,6 +17,8 @@ export function createScene(
   callbacks: {
     select: (id: string | null) => void;
     move: (id: string, x: number, y: number) => void;
+    /** Rotation in the stored shape convention (scene yaw negated). */
+    rotate: (id: string, rotation: number) => void;
     dragStart: () => void;
     status: (message: string) => void;
   },
@@ -58,8 +60,22 @@ export function createScene(
   let alive = true;
   let selected: string | null = null;
   let firstFit = true;
-  let drag: { id: string; offset: THREE.Vector3; start: THREE.Vector3; pointer: number } | null =
-    null;
+  type Drag =
+    | {
+        mode: "move";
+        id: string;
+        offset: THREE.Vector3;
+        start: THREE.Vector3;
+        pointer: number;
+      }
+    | {
+        mode: "rotate";
+        id: string;
+        startAngle: number;
+        startYaw: number;
+        pointer: number;
+      };
+  let drag: Drag | null = null;
   const ray = new THREE.Raycaster();
   const mouse = new THREE.Vector2();
   const ground = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
@@ -138,8 +154,10 @@ export function createScene(
     for (const item of items) {
       const obj = objects.get(item.id);
       if (obj) {
-        if (drag?.id !== item.id) obj.position.set(item.x, 0, item.y);
-        obj.rotation.y = -item.rotation;
+        if (drag?.id !== item.id) {
+          obj.position.set(item.x, 0, item.y);
+          obj.rotation.y = -item.rotation;
+        }
         obj.scale.setScalar(item.scale);
       } else if (!pending.has(item.id) && !failed.has(item.id)) {
         pending.add(item.id);
@@ -180,27 +198,43 @@ export function createScene(
     ray.setFromCamera(mouse, camera);
   }
   function down(event: PointerEvent) {
-    if (event.button !== 0 || drag) return;
+    if (drag || (event.button !== 0 && event.button !== 2)) return;
     cast(event);
     const hit = ray.intersectObjects([...objects.values()], true)[0];
     let node: THREE.Object3D | null = hit?.object ?? null;
     while (node && !node.userData.modelId) node = node.parent;
     if (!node) {
-      callbacks.select(null);
+      // Left click on empty ground clears selection; right drag on empty
+      // ground is left to OrbitControls for orbiting the camera.
+      if (event.button === 0) callbacks.select(null);
       return;
     }
     const point = ray.ray.intersectPlane(ground, new THREE.Vector3());
-    if (!point) return;
+    const obj = objects.get(node.userData.modelId);
+    if (!point || !obj) return;
     controls.enabled = false;
     callbacks.select(node.userData.modelId);
-    callbacks.dragStart();
-    drag = {
-      id: node.userData.modelId,
-      offset: point.sub(node.position),
-      start: node.position.clone(),
-      pointer: event.pointerId,
-    };
     renderer.domElement.setPointerCapture(event.pointerId);
+    if (event.button === 2) {
+      // Right-drag on a model: rotate only this model. The yaw follows the
+      // cursor's orbit angle around the model's center on the ground plane.
+      drag = {
+        mode: "rotate",
+        id: node.userData.modelId,
+        startAngle: Math.atan2(point.x - obj.position.x, point.z - obj.position.z),
+        startYaw: obj.rotation.y,
+        pointer: event.pointerId,
+      };
+    } else {
+      callbacks.dragStart();
+      drag = {
+        mode: "move",
+        id: node.userData.modelId,
+        offset: point.sub(obj.position),
+        start: obj.position.clone(),
+        pointer: event.pointerId,
+      };
+    }
     event.stopImmediatePropagation();
   }
   function move(event: PointerEvent) {
@@ -209,8 +243,16 @@ export function createScene(
     const p = ray.ray.intersectPlane(ground, new THREE.Vector3());
     const obj = objects.get(drag.id);
     if (p && obj) {
-      obj.position.copy(p.sub(drag.offset));
-      obj.position.y = 0;
+      if (drag.mode === "rotate") {
+        const angle = Math.atan2(p.x - obj.position.x, p.z - obj.position.z);
+        let delta = angle - drag.startAngle;
+        if (delta > Math.PI) delta -= Math.PI * 2;
+        if (delta < -Math.PI) delta += Math.PI * 2;
+        obj.rotation.y = drag.startYaw + delta;
+      } else {
+        obj.position.copy(p.sub(drag.offset));
+        obj.position.y = 0;
+      }
       updateSelection();
     }
     event.stopImmediatePropagation();
@@ -219,8 +261,15 @@ export function createScene(
     if (!drag || drag.pointer !== event.pointerId) return;
     const obj = objects.get(drag.id);
     if (obj) {
-      if (event.type === "pointercancel") obj.position.copy(drag.start);
-      else callbacks.move(drag.id, obj.position.x, obj.position.z);
+      if (event.type === "pointercancel") {
+        if (drag.mode === "move") obj.position.copy(drag.start);
+        else obj.rotation.y = drag.startYaw;
+      } else if (drag.mode === "move") {
+        callbacks.move(drag.id, obj.position.x, obj.position.z);
+      } else {
+        // Stored shape rotation is the negated scene yaw.
+        callbacks.rotate(drag.id, -obj.rotation.y);
+      }
     }
     drag = null;
     controls.enabled = true;
@@ -228,10 +277,12 @@ export function createScene(
       renderer.domElement.releasePointerCapture(event.pointerId);
     event.stopImmediatePropagation();
   }
+  const preventContextMenu = (event: Event) => event.preventDefault();
   renderer.domElement.addEventListener("pointerdown", down, true);
   renderer.domElement.addEventListener("pointermove", move, true);
   renderer.domElement.addEventListener("pointerup", up, true);
   renderer.domElement.addEventListener("pointercancel", up, true);
+  renderer.domElement.addEventListener("contextmenu", preventContextMenu);
   const resize = () => {
     const w = host.clientWidth,
       h = host.clientHeight;
@@ -269,6 +320,7 @@ export function createScene(
       renderer.domElement.removeEventListener("pointermove", move, true);
       renderer.domElement.removeEventListener("pointerup", up, true);
       renderer.domElement.removeEventListener("pointercancel", up, true);
+      renderer.domElement.removeEventListener("contextmenu", preventContextMenu);
       loaded.forEach(disposeRoot);
       grid.geometry.dispose();
       (grid.material as THREE.Material).dispose();
